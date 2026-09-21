@@ -1,7 +1,7 @@
 // ----------------------------------------------------------------------------
 // -                        Open3D: www.open3d.org                            -
 // ----------------------------------------------------------------------------
-// Copyright (c) 2018-2024 www.open3d.org
+// Copyright (c) 2018-2026 www.open3d.org
 // SPDX-License-Identifier: MIT
 // ----------------------------------------------------------------------------
 
@@ -52,6 +52,8 @@ public:
         OrientedBoundingBox = 11,
         /// AxisAlignedBoundingBox
         AxisAlignedBoundingBox = 12,
+        /// OrientedBoundingEllipsoid
+        OrientedBoundingEllipsoid = 13,
     };
 
 public:
@@ -113,6 +115,12 @@ struct MetricParameters {
                 "MetricParameters: fscore_radius={}, n_sampled_points={}",
                 fscore_radius, n_sampled_points);
     }
+};
+
+enum class MethodOBBCreate {
+    PCA,             ///< Principal Component Analysis
+    MINIMAL_APPROX,  ///< Minimal OBB approximation
+    MINIMAL_JYLANKI  ///< Minimal OBB by Jylanki
 };
 
 }  // namespace geometry

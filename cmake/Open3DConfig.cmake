@@ -5,7 +5,7 @@ include_guard(GLOBAL)
 # Open3D release the vendored header tree and the fetched prebuilt binaries
 # belong to. Bump this together with the headers in include/.
 # --------------------------------------------------------------
-set(_open3d_version "0.19.0"
+set(_open3d_version "0.20.0"
     CACHE STRING "Open3D release version the prebuilt binaries are downloaded from")
 set(_open3d_release_base_url "https://github.com/isl-org/Open3D/releases/download/v${_open3d_version}"
     CACHE STRING "Base URL of the Open3D GitHub release assets")
@@ -25,6 +25,7 @@ set(_open3d_root "${CMAKE_CURRENT_LIST_DIR}/..")
 set(_open3d_android_lib_dir "${_open3d_root}/android/lib/clang_18.0_cxx17_64/arm64-v8a")
 set(_open3d_android_include_dirs
 	"${_open3d_root}/android/include"
+	"${_open3d_root}/android/include/oneapi"
 	"${_open3d_root}/android/include/open3d/3rdparty")
 
 # Include directories exposed through the Open3D target; filled in by the
@@ -82,6 +83,20 @@ endfunction()
 # "[...] links to: Open3D::Open3D but the target was not found."
 # --------------------------------------------------------------
 function(_setup_open3d_targets lib_dir include_dirs)
+    # Validate the artifacts at configure time so a missing or incomplete
+    # prebuilt package fails loudly instead of producing a broken target.
+    set(_o3d_lib "${lib_dir}/libOpen3D${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    if(NOT EXISTS "${_o3d_lib}")
+        message(FATAL_ERROR "Open3D shared library not found at '${_o3d_lib}'. "
+            "The prebuilt package seems to be missing or incomplete.")
+    endif()
+    file(GLOB _tbb_lib "${lib_dir}/libtbb${CMAKE_SHARED_LIBRARY_SUFFIX}*")
+    list(GET _tbb_lib 0 _tbb_lib)
+    if(NOT EXISTS "${_tbb_lib}")
+        message(FATAL_ERROR "TBB shared library not found below '${lib_dir}'. "
+            "The prebuilt package seems to be missing or incomplete.")
+    endif()
+
     if(NOT TARGET TBB)
         add_library(TBB SHARED IMPORTED GLOBAL)
     endif()
@@ -275,6 +290,17 @@ elseif(WIN32)
 # macOS: prebuilt binaries (universal2)
 # ==============================================================
 elseif(APPLE)
+    # Open3D v0.20.0 dropped macOS x86_64 support; only the
+    # open3d-devel-darwin-arm64 devel package is published upstream.
+    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+        message(FATAL_ERROR
+            "Open3D v0.20.0 ships macOS binaries for Apple Silicon (arm64) only. "
+            "Open3D dropped macOS x86_64 support in v0.20.0, so Intel Macs are no "
+            "longer supported. Use an Apple Silicon machine (or a v0.19.0 checkout "
+            "of this wrapper) instead. Detected host architecture: "
+            "'${CMAKE_SYSTEM_PROCESSOR}'.")
+    endif()
+
     set(_url "${_open3d_release_base_url}/open3d-devel-darwin-arm64-${_open3d_version}.tar.xz")
     set(_fetch_dir "${CMAKE_BINARY_DIR}/open3d")
     set(_lib_subdir "lib")
@@ -326,6 +352,7 @@ endif()
 # ==============================================================
 set(Open3D_LIBRARIES open3d)
 set(Open3D_INCLUDE_DIRS "${_open3d_platform_include_dirs}")
+set(Open3D_VERSION "${_open3d_version}")
 
 if(NOT TARGET Open3D::Open3D)
     add_library(Open3D::Open3D ALIAS open3d)

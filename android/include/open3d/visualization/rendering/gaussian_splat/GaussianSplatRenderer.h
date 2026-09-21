@@ -1,0 +1,304 @@
+// ----------------------------------------------------------------------------
+// -                        Open3D: www.open3d.org                            -
+// ----------------------------------------------------------------------------
+// Copyright (c) 2018-2026 www.open3d.org
+// SPDX-License-Identifier: MIT
+// ----------------------------------------------------------------------------
+
+#pragma once
+
+#include <Eigen/Core>
+#include <Eigen/Geometry>
+#include <cstdint>
+#include <memory>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include "open3d/visualization/rendering/Camera.h"
+#include "open3d/visualization/rendering/RendererHandle.h"
+
+/// @cond
+namespace filament {
+class Engine;
+}  // namespace filament
+/// @endcond
+
+namespace open3d {
+namespace visualization {
+namespace rendering {
+
+class FilamentResourceManager;
+class FilamentScene;
+class FilamentView;
+
+/// Manages per-view GPU output targets, backend lifetime, and frame
+/// orchestration for the Gaussian splat compute pipeline.  One instance lives
+/// inside FilamentRenderer and FilamentRenderToBuffer.
+class GaussianSplatRenderer {
+public:
+    /// Tunable knobs for the compute pipeline, set once at construction.
+    struct RenderConfig {
+        Eigen::Vector2i tile_size = Eigen::Vector2i(16, 16);
+        int projection_group_size = 64;
+        Eigen::Vector2i composite_group_size = Eigen::Vector2i(16, 16);
+        int max_sh_degree = 2;
+        // Hard cap on tiles per splat; splats exceeding it are culled rather
+        // than cropped. Cropping huge splats can create hard-edged opaque
+        // blocks. The cap is independent of buffer sizing, so raising it does
+        // not increase GPU memory use. Default is 256.
+        std::uint32_t max_tiles_per_splat = 256u;
+        // Estimates average tiles per splat for buffer sizing; it is not an
+        // enforcement limit. Actual writes are bounds-checked, so excess
+        // entries are dropped with a warning rather than overflowing.
+        std::uint32_t avg_tiles_per_splat = 32u;
+        /// Hard ceiling for total tile entries stored in tile_entries / sort
+        /// buffers. When exceeded, compute passes clamp work to this capacity
+        /// and surface a one-time warning to the user.
+        std::uint32_t max_tile_entries_total = 32u * 1024u * 1024u;
+        /// When true, multiply each splat's opacity by the density compensation
+        /// factor sqrt(det(Sigma_orig) / det(Sigma_blurred)).  This counteracts
+        /// the over-brightening of small splats caused by the subpixel blur
+        /// regularisation (+0.3 on diagonal).  Mirrors gsplat PR #117.
+        /// Can also be set per-scene via
+        /// MaterialRecord::gaussian_splat_antialias.
+        bool antialias = false;
+    };
+
+    /// Camera and viewport state extracted per-view each geometry pass.
+    struct ViewRenderData {
+        Eigen::Vector2i viewport_origin = Eigen::Vector2i::Zero();
+        Eigen::Vector2i viewport_size = Eigen::Vector2i::Zero();
+        Eigen::Vector3f camera_position = Eigen::Vector3f::Zero();
+        bool screen_y_down = false;
+        Camera::Transform model_matrix = Camera::Transform::Identity();
+        Camera::Transform view_matrix = Camera::Transform::Identity();
+        Camera::ProjectionMatrix projection_matrix =
+                Camera::ProjectionMatrix::Identity();
+        Camera::Transform culling_projection_matrix =
+                Camera::Transform::Identity();
+        Camera::ProjectionInfo projection;
+        double near_plane = 0.0;
+        double far_plane = 0.0;
+    };
+
+    /// Per-view GPU output textures and render targets.
+    /// scene_depth is always allocated to maintain stable render-target
+    /// topology and ensure Filament can write depth regardless of scene
+    /// content.
+    struct OutputTargets {
+        TextureHandle color;
+        TextureHandle depth;
+        RenderTargetHandle render_target;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+
+        /// When true, the Vulkan images below are allocated by the non-Apple
+        /// backend and must be destroyed in ReleaseOutputTextures.
+        /// Always false on Apple (which uses MTLTexture).
+        bool uses_vulkan_interop = false;
+
+        /// Opaque Vulkan handles stored as uintptr_t to avoid including Vulkan
+        /// headers here. Cast to VkImage / VkDeviceMemory in the non-Apple
+        /// backend. Zero unless uses_vulkan_interop=true.
+        std::uintptr_t color_vk_image = 0;
+        std::uintptr_t color_vk_memory = 0;
+        std::uintptr_t depth_vk_image = 0;
+        std::uintptr_t depth_vk_memory = 0;
+
+        /// Apple (Metal): imported Filament scene depth / GS color native
+        /// textures.
+        std::uintptr_t scene_depth_mtl_texture = 0;
+        std::uintptr_t gs_color_mtl_texture = 0;
+        ViewRenderData render_data;
+        /// Color-only render target wrapping `color`, used for readPixels in
+        /// the offscreen (FilamentRenderToBuffer) path.
+        RenderTargetHandle gs_readback_rt;
+        bool has_render_data = false;
+        bool has_valid_output = false;
+        bool needs_geometry_render = true;
+        bool needs_composite_render = true;
+        bool needs_output_ready_redraw = false;
+        bool needs_followup_scene_render = false;
+        /// True when an offscreen depth readback has been requested for this
+        /// view.  Controls allocation of the merged_depth_u16_tex scratch
+        /// texture; cleared after each frame.
+        bool wants_depth_readback = false;
+        std::uint64_t last_scene_change_id = 0;
+    };
+
+    /// GPU backend for geometry and composite compute.
+    class Backend {
+    public:
+        virtual ~Backend() = default;
+
+        virtual const char* GetName() const = 0;
+        virtual bool IsAvailable() const { return true; }
+        virtual void ForgetView(const FilamentView& view) = 0;
+        virtual bool RenderGeometryStage(const FilamentView& view,
+                                         const FilamentScene& scene,
+                                         const ViewRenderData& render_data,
+                                         OutputTargets& targets) = 0;
+        virtual bool RenderCompositeStage(const FilamentView& view,
+                                          const ViewRenderData& render_data,
+                                          OutputTargets& targets) = 0;
+
+        /// Create platform-specific output textures (zero-copy path). Returns
+        /// true if setup succeeded; false falls through to Filament-owned
+        /// textures in PrepareOutputTargets.
+        virtual bool PrepareOutputTextures(
+                FilamentView& view,
+                FilamentResourceManager& resource_mgr,
+                std::uint32_t width,
+                std::uint32_t height,
+                OutputTargets& targets) = 0;
+
+        /// Destroy platform-specific textures created by PrepareOutputTextures.
+        /// Called from ResetOutputTargets before Filament wrappers are freed.
+        virtual void ReleaseOutputTextures(
+                FilamentResourceManager& resource_mgr,
+                OutputTargets& targets) = 0;
+
+        /// Read the merged GS+Filament depth (R16UI, normalised uint16 in
+        /// [0,65535]) into \p out for offscreen RenderToDepthImage.
+        /// Default: unsupported (returns false).
+        virtual bool ReadMergedDepthToUint16Cpu(const FilamentView& view,
+                                                std::vector<std::uint16_t>& out,
+                                                std::uint32_t width,
+                                                std::uint32_t height) {
+            (void)view;
+            (void)out;
+            (void)width;
+            (void)height;
+            return false;
+        }
+
+        /// Read the GS composite depth (R32F, linear eye-space in metres) into
+        /// \p out.  Used when no scene (mesh) depth is available so the merge
+        /// pass is skipped and composite_depth_tex is read directly.
+        /// Default: unsupported (returns false).
+        virtual bool ReadCompositeDepthToFloatCpu(const FilamentView& view,
+                                                  std::vector<float>& out,
+                                                  std::uint32_t width,
+                                                  std::uint32_t height) {
+            (void)view;
+            (void)out;
+            (void)width;
+            (void)height;
+            return false;
+        }
+
+        /// Read the GS composite color overlay (RGBA16F, premultiplied, four
+        /// half-float bit patterns per pixel) into \p out.  Reads the shared
+        /// output image referenced by \p targets directly, bypassing Filament's
+        /// readPixels. Default: unsupported (returns false).
+        virtual bool ReadColorToRGBA16FCpu(const OutputTargets& targets,
+                                           std::vector<std::uint16_t>& out) {
+            (void)targets;
+            (void)out;
+            return false;
+        }
+    };
+
+    GaussianSplatRenderer(filament::Engine& engine,
+                          FilamentResourceManager& resource_mgr);
+    ~GaussianSplatRenderer();
+
+    void RenderGeometryStage(FilamentView& view, const FilamentScene& scene);
+    /// Returns true if the composite pass ran and the backend reported success.
+    bool RenderCompositeStage(FilamentView& view);
+    void PruneOutputs(
+            const std::unordered_set<const FilamentView*>& live_views);
+
+    /// Destroys GS output targets for a specific view immediately, clearing
+    /// the view's render target first.  Must be called before any Filament
+    /// texture used as an attachment is freed (e.g. on window resize before
+    /// FilamentView::color_buffer_ is destroyed) to prevent a
+    /// use-after-free crash in Filament's handle validation.
+    void InvalidateOutputForView(FilamentView& view);
+
+    /// Marks the view so the next geometry + composite passes run even if the
+    /// scene and camera are unchanged. Used by offscreen \c
+    /// FilamentRenderToBuffer captures: without this, \c needs_render stays
+    /// false after the first composite and subsequent \c RenderToImage calls
+    /// would skip the GS pipeline and read only the Filament swapchain (no
+    /// splats).
+    void RequestRedrawForView(const FilamentView& view);
+
+    /// Marks the final composite pass dirty after Filament redraws its shared
+    /// color target while the geometry pass inputs remain unchanged.
+    void RequestCompositeForView(const FilamentView& view);
+
+    /// Returns and clears a request to redraw after a newly created output
+    /// target has received its first successful composite.
+    bool ConsumeOutputReadyRedrawRequest(const FilamentView& view);
+
+    /// Returns and clears a one-shot cached scene render request created when
+    /// a Metal output target is recreated.
+    bool ConsumeFollowupSceneRenderRequest(const FilamentView& view);
+
+    bool IsEnabled() const;
+    void SetEnabled(bool enabled);
+
+    /// Returns whether the selected backend can render Gaussian splats.
+    bool HasUsableBackend() const;
+
+    bool HasOutput(const FilamentView& view) const;
+    TextureHandle GetColorTexture(const FilamentView& view) const;
+    TextureHandle GetDepthTexture(const FilamentView& view) const;
+    /// Returns a color-only render target suitable for readPixels readback.
+    /// Only valid after RenderCompositeStage has been called for this view.
+    RenderTargetHandle GetColorReadbackRT(const FilamentView& view) const;
+
+    /// Read the GPU-merged GS+Filament depth (R16UI, [0,65535]) into \p out
+    /// for offscreen RenderToDepthImage. Returns false when no merged depth
+    /// texture exists for this view.
+    bool ReadMergedDepthToUint16Cpu(const FilamentView& view,
+                                    std::vector<std::uint16_t>& out,
+                                    std::uint32_t width,
+                                    std::uint32_t height);
+
+    /// Read the GS composite depth (R32F, linear eye-space) into \p out when
+    /// no scene depth (mesh) is present and the merge pass was skipped.
+    bool ReadCompositeDepthToFloatCpu(const FilamentView& view,
+                                      std::vector<float>& out,
+                                      std::uint32_t width,
+                                      std::uint32_t height);
+
+    /// Read the GS composite color overlay for \p view as RGBA16F half-float
+    /// bit patterns (4 per pixel, premultiplied alpha).  Returns false when the
+    /// backend cannot read the shared image directly.
+    bool ReadColorToRGBA16FCpu(const FilamentView& view,
+                               std::vector<std::uint16_t>& out);
+
+    /// Signal that an offscreen depth readback is needed for \p view in the
+    /// next composite pass.  Causes the merged_depth_u16_tex to be allocated
+    /// only when a scene-depth texture is also available.
+    void RequestDepthReadbackForView(const FilamentView& view,
+                                     bool wanted = true);
+
+    const ViewRenderData* GetViewRenderData(const FilamentView& view) const;
+    const RenderConfig& GetRenderConfig() const;
+    void SetRenderConfig(const RenderConfig& config);
+    const char* GetBackendName() const;
+
+private:
+    using ViewKey = const FilamentView*;
+
+    OutputTargets& PrepareOutputTargets(FilamentView& view);
+    void ResetOutputTargets(OutputTargets& targets);
+    ViewRenderData ExtractViewRenderData(const FilamentView& view) const;
+    bool UpdateViewRenderData(OutputTargets& targets, const FilamentView& view);
+    bool ValidateRenderConfig(const RenderConfig& config) const;
+
+    filament::Engine& engine_;
+    FilamentResourceManager& resource_mgr_;
+    std::unordered_map<ViewKey, OutputTargets> outputs_;
+    RenderConfig render_config_;
+    std::unique_ptr<Backend> backend_;
+    bool enabled_ = false;
+};
+
+}  // namespace rendering
+}  // namespace visualization
+}  // namespace open3d

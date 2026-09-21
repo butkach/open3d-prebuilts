@@ -1,7 +1,7 @@
 // ----------------------------------------------------------------------------
 // -                        Open3D: www.open3d.org                            -
 // ----------------------------------------------------------------------------
-// Copyright (c) 2018-2024 www.open3d.org
+// Copyright (c) 2018-2026 www.open3d.org
 // SPDX-License-Identifier: MIT
 // ----------------------------------------------------------------------------
 
@@ -10,9 +10,14 @@
 //
 // For developers, please make sure that this file is not ultimately included in
 // Open3D.h.
-
+//
+// OPEN3D_BUILD_CORE_ONLY (e.g. Android TSDF, no Fortran toolchain for OpenBLAS/MKL)
+// uses the header-only Eigen shim in LinalgFallbackEigen.h instead.
 #pragma once
 
+#ifdef OPEN3D_BUILD_CORE_ONLY
+#include "open3d/core/linalg/LinalgFallbackEigen.h"
+#else
 #ifdef USE_BLAS
 #define OPEN3D_CPU_LINALG_INT int32_t
 #define lapack_int int32_t
@@ -22,3 +27,5 @@
 #include <mkl.h>
 #define OPEN3D_CPU_LINALG_INT MKL_INT
 #endif
+#endif  // OPEN3D_BUILD_CORE_ONLY
+

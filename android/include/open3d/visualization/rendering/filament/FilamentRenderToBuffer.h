@@ -1,7 +1,7 @@
 // ----------------------------------------------------------------------------
 // -                        Open3D: www.open3d.org                            -
 // ----------------------------------------------------------------------------
-// Copyright (c) 2018-2024 www.open3d.org
+// Copyright (c) 2018-2026 www.open3d.org
 // SPDX-License-Identifier: MIT
 // ----------------------------------------------------------------------------
 
@@ -25,6 +25,7 @@ namespace rendering {
 class FilamentRenderer;
 class FilamentScene;
 class FilamentView;
+class GaussianSplatRenderer;
 
 class FilamentRenderToBuffer : public RenderToBuffer {
 public:
@@ -58,12 +59,18 @@ private:
     filament::SwapChain* swapchain_ = nullptr;
     FilamentView* view_ = nullptr;
     FilamentScene* scene_ = nullptr;
+    /// Set by FilamentRenderer::CreateBufferRenderer to mirror GS pipeline.
+    GaussianSplatRenderer* gaussian_splat_renderer_ = nullptr;
 
     std::size_t width_ = 0;
     std::size_t height_ = 0;
     std::size_t n_channels_ = 0;
     std::uint8_t* buffer_ = nullptr;
     std::size_t buffer_size_ = 0;
+#if defined(__APPLE__)
+    std::uint8_t* rgba_readback_buffer_ = nullptr;
+    std::size_t rgba_readback_buffer_size_ = 0;
+#endif
     bool depth_image_ = false;
 
     BufferReadyCallback callback_;
@@ -72,6 +79,9 @@ private:
 
     static void ReadPixelsCallback(void* buffer, size_t size, void* user);
     void CopySettings(const View* view);
+    /// Invoke the pending callback with the filled buffer and mark the frame
+    /// complete. Pass \p ok false to deliver an empty buffer on failure.
+    void DeliverFrame(bool ok = true);
 };
 
 }  // namespace rendering

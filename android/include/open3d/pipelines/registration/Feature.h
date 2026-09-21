@@ -1,7 +1,7 @@
 // ----------------------------------------------------------------------------
 // -                        Open3D: www.open3d.org                            -
 // ----------------------------------------------------------------------------
-// Copyright (c) 2018-2024 www.open3d.org
+// Copyright (c) 2018-2026 www.open3d.org
 // SPDX-License-Identifier: MIT
 // ----------------------------------------------------------------------------
 
@@ -9,6 +9,7 @@
 
 #include <Eigen/Core>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "open3d/geometry/KDTreeSearchParam.h"
@@ -59,10 +60,13 @@ public:
 ///
 /// \param input The Input point cloud.
 /// \param search_param KDTree KNN search parameter.
+/// \param indices Indices of the points to compute FPFH features on.
+/// If not set, compute features for the whole point cloud.
 std::shared_ptr<Feature> ComputeFPFHFeature(
         const geometry::PointCloud &input,
         const geometry::KDTreeSearchParam &search_param =
-                geometry::KDTreeSearchParamKNN());
+                geometry::KDTreeSearchParamKNN(),
+        const std::optional<std::vector<size_t>> &indices = std::nullopt);
 
 /// \brief Function to find correspondences via 1-nearest neighbor feature
 /// matching. Target is used to construct a nearest neighbor search

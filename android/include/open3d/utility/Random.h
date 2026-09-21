@@ -1,7 +1,7 @@
 // ----------------------------------------------------------------------------
 // -                        Open3D: www.open3d.org                            -
 // ----------------------------------------------------------------------------
-// Copyright (c) 2018-2024 www.open3d.org
+// Copyright (c) 2018-2026 www.open3d.org
 // SPDX-License-Identifier: MIT
 // ----------------------------------------------------------------------------
 
@@ -28,22 +28,22 @@ void Seed(const int seed);
 ///
 /// {
 ///     // Put the lock and the call to the engine in the same scope.
-///     std::lock_guard<std::mutex> lock(*utility::random::GetMutex());
-///     std::shuffle(vals.begin(), vals.end(), *utility::random::GetEngine());
+///     std::scoped_lock lock(utility::random::GetMutex());
+///     std::shuffle(vals.begin(), vals.end(), utility::random::GetEngine());
 /// }
 /// ```
-std::mt19937* GetEngine();
+std::mt19937& GetEngine();
 
 /// Get global singleton mutex to protect the engine call. Also see
 /// random::GetEngine().
-std::mutex* GetMutex();
+std::mutex& GetMutex();
 
 /// Generate a random uint32.
 /// This function is globally seeded by utility::random::Seed().
 /// This function is automatically protected by the global random mutex.
 uint32_t RandUint32();
 
-/// Generate uniformly distributed random integers in [low, high).
+/// Generate uniformly distributed random integers in [low, high].
 /// This class is globally seeded by utility::random::Seed().
 /// This class is a wrapper around std::uniform_int_distribution.
 ///
@@ -54,7 +54,7 @@ uint32_t RandUint32();
 /// // Globally seed Open3D. This will affect all random functions.
 /// utility::random::Seed(0);
 ///
-/// // Generate a random int in [0, 100).
+/// // Generate a random int in [0, 100].
 /// utility::random::UniformIntGenerator<int> gen(0, 100);
 /// for (size_t i = 0; i < 10; i++) {
 ///     std::cout << gen() << std::endl;
@@ -64,24 +64,25 @@ template <typename T>
 class UniformIntGenerator {
 public:
     /// Generate uniformly distributed random integer from
-    /// [low, low + 1, ... high - 1].
+    /// [low, low + 1, ... high].
     ///
     /// \param low The lower bound (inclusive).
-    /// \param high The upper bound (exclusive). \p high must be > \p low.
+    /// \param high The upper bound (inclusive). \p high must be >= \p low.
     UniformIntGenerator(const T low, const T high) : distribution_(low, high) {
         if (low < 0) {
             utility::LogError("low must be > 0, but got {}.", low);
         }
-        if (low >= high) {
-            utility::LogError("low must be < high, but got low={} and high={}.",
-                              low, high);
+        if (low > high) {
+            utility::LogError(
+                    "low must be <= high, but got low={} and high={}.", low,
+                    high);
         }
     }
 
     /// Call this to generate a uniformly distributed integer.
     T operator()() {
-        std::lock_guard<std::mutex> lock(*GetMutex());
-        return distribution_(*GetEngine());
+        std::scoped_lock lock(GetMutex());
+        return distribution_(GetEngine());
     }
 
 protected:
@@ -122,8 +123,8 @@ public:
 
     /// Call this to generate a uniformly distributed floating point value.
     T operator()() {
-        std::lock_guard<std::mutex> lock(*GetMutex());
-        return distribution_(*GetEngine());
+        std::scoped_lock lock(GetMutex());
+        return distribution_(GetEngine());
     }
 
 protected:
@@ -163,8 +164,8 @@ public:
 
     /// Call this to generate a normally distributed floating point value.
     T operator()() {
-        std::lock_guard<std::mutex> lock(*GetMutex());
-        return distribution_(*GetEngine());
+        std::scoped_lock lock(GetMutex());
+        return distribution_(GetEngine());
     }
 
 protected:
@@ -209,8 +210,8 @@ public:
 
     /// Call this to generate a discretely distributed integer value.
     T operator()() {
-        std::lock_guard<std::mutex> lock(*GetMutex());
-        return distribution_(*GetEngine());
+        std::scoped_lock lock(GetMutex());
+        return distribution_(GetEngine());
     }
 
 protected:

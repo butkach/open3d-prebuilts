@@ -1,12 +1,14 @@
 # open3d-prebuilts
 
-A lightweight CMake wrapper repository for managing precompiled Open3D v0.19.0 dependencies across cross-platform C++17 projects. 
+A lightweight CMake wrapper repository for managing precompiled Open3D v0.20.0 dependencies across cross-platform C++17 projects. 
 
 This repository centralizes Open3D dependency management by dynamically fetching official release binaries for desktop platforms (Windows, macOS, Linux) via `FetchContent`, while supporting custom-built local binaries for Android targets (`arm64-v8a`). This prevents Git repository bloat in downstream projects and ensures fast build times by skipping Open3D compilation.
 
+**Note**: Only the default (CPU) devel packages are fetched. The CUDA/SYCL variants published for Windows and Linux are experimental upstream and are not supported by this wrapper.
+
 ## Supported Platforms
 
-* **Windows (AMD64):** Dynamically fetched from the official Open3D `v0.19.0` release. Supports fetching both `Release` and `Debug` builds selectively.
+* **Windows (AMD64):** Dynamically fetched from the official Open3D `v0.20.0` release. Supports fetching both `Release` and `Debug` builds selectively.
 * **Linux (x86_64, cxx11-abi):** Dynamically fetched from the official release.
 * **macOS (Apple Silicon / ARM64):** Dynamically fetched from the official release.
 * **Android (`arm64-v8a`):** Uses prebuilt libraries (compiled with Clang 18.0, C++17) and patched headers located in `android` folder.
@@ -28,7 +30,7 @@ include(FetchContent)
 FetchContent_Declare(
     open3d_prebuilts
     GIT_REPOSITORY https://github.com/butkach/open3d-prebuilts
-    GIT_TAG        v0.19.0
+    GIT_TAG        v0.20.0
 )
 FetchContent_MakeAvailable(open3d_prebuilts)
 
@@ -57,18 +59,21 @@ target_link_libraries(<app> PRIVATE Open3D::Open3D)
 
 ## Configuration Options
 
-When building for **Windows**, you can control which prebuilt binaries are downloaded to save bandwidth and disk space. These options have no effect on Android, macOS, or Linux.
+When building for **Windows**, you can control which prebuilt binaries are downloaded to save bandwidth and disk space. `OPEN3D_FETCH_RELEASE` and `OPEN3D_FETCH_DEBUG` have no effect on Android, macOS, or Linux.
 
 | Option | Description | Default |
 | :--- | :--- | :--- |
-| `OPEN3D_FETCH_RELEASE` | Downloads and configures the Open3D `v0.19.0` Release binaries. | `ON` |
-| `OPEN3D_FETCH_DEBUG` | Downloads and configures the Open3D `v0.19.0` Debug binaries. | `ON` |
+| `OPEN3D_FETCH_RELEASE` | Downloads and configures the Open3D `v0.20.0` Release binaries. | `ON` |
+| `OPEN3D_FETCH_DEBUG` | Downloads and configures the Open3D `v0.20.0` Debug binaries. | `ON` |
 
 To disable fetching debug binaries, pass the option during configuration:
 
 ```bash
 cmake -B build -DOPEN3D_FETCH_DEBUG=OFF
 ```
+
+Downloads are cached in `${FETCHCONTENT_BASE_DIR}` and extracted into `${CMAKE_BINARY_DIR}/open3d/<version>/<platform>`, both namespaced by the Open3D version. Re-configuring an existing build tree after a version bump therefore re-downloads and re-extracts the binaries instead of silently reusing the previous release. If `include/open3d/Open3DConfig.h` and `OPEN3D_VERSION` disagree, a warning is emitted because mixing headers with different binaries can
+break the ABI.
 
 ## Provided Targets
 

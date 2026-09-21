@@ -1,7 +1,7 @@
 // ----------------------------------------------------------------------------
 // -                        Open3D: www.open3d.org                            -
 // ----------------------------------------------------------------------------
-// Copyright (c) 2018-2024 www.open3d.org
+// Copyright (c) 2018-2026 www.open3d.org
 // SPDX-License-Identifier: MIT
 // ----------------------------------------------------------------------------
 
@@ -10,8 +10,12 @@
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
+#if defined(__APPLE__)
+#include <vector>
+#endif
 
 #include "open3d/visualization/rendering/Renderer.h"
+#include "open3d/visualization/rendering/filament/FilamentEngine.h"
 
 /// @cond
 namespace filament {
@@ -30,6 +34,7 @@ namespace rendering {
 class FilamentMaterialModifier;
 class FilamentRenderToBuffer;
 class FilamentResourceManager;
+class GaussianSplatRenderer;
 class FilamentScene;
 class FilamentView;
 
@@ -49,7 +54,7 @@ public:
     Scene* GetScene(const SceneHandle& id) const override;
     void DestroyScene(const SceneHandle& id) override;
 
-    virtual void SetClearColor(const Eigen::Vector4f& color) override;
+    void SetClearColor(const Eigen::Vector4f& color) override;
     void UpdateSwapChain() override;
     void UpdateBitmapSwapChain(int width, int height) override;
 
@@ -62,6 +67,13 @@ public:
     void EndFrame() override;
 
     void SetOnAfterDraw(std::function<void()> callback) override;
+
+    bool LastBeginFrameSubmitted() const override { return frame_started_; }
+
+    /// UI commands are recorded before the current Gaussian splat composite.
+    /// Call \p callback after a successful composite so the GUI can
+    /// \c PostRedraw() and bind the updated overlay texture in the next frame.
+    void SetOnGaussianCompositeComplete(std::function<void()> callback);
 
     MaterialHandle AddMaterial(const ResourceLoadRequest& request) override;
     MaterialInstanceHandle AddMaterialInstance(
@@ -99,7 +111,23 @@ public:
     void ConvertToGuiScene(const SceneHandle& id);
     FilamentScene* GetGuiScene() const { return gui_scene_.get(); }
 
+    bool HasGaussianSplatOutput(const FilamentView& view) const;
+    TextureHandle GetGaussianSplatColorTexture(const FilamentView& view) const;
+    TextureHandle GetGaussianSplatDepthTexture(const FilamentView& view) const;
+    int GetGaussianSplatMaxShDegree() const;
+    GaussianSplatRenderer* GetGaussianSplatRenderer() {
+        return gaussian_splat_renderer_.get();
+    }
+    /// Invalidates GS outputs for the given view; see
+    /// GaussianSplatRenderer::InvalidateOutputForView for why this is
+    /// needed before FilamentView::color_buffer_ is destroyed on resize.
+    void InvalidateGaussianSplatOutput(FilamentView& view);
+
     filament::Renderer* GetNative() { return renderer_; }
+
+    RenderingType GetBackendType() override {
+        return EngineInstance::GetBackendType();
+    }
 
 private:
     friend class FilamentRenderToBuffer;
@@ -114,14 +142,21 @@ private:
     std::unique_ptr<FilamentScene> gui_scene_;
 
     std::unique_ptr<FilamentMaterialModifier> materials_modifier_;
+    std::unique_ptr<GaussianSplatRenderer> gaussian_splat_renderer_;
     FilamentResourceManager& resource_mgr_;
 
     std::unordered_set<std::shared_ptr<FilamentRenderToBuffer>>
             buffer_renderers_;
+    std::vector<FilamentView*> rendered_views_;
 
     bool frame_started_ = false;
     std::function<void()> on_after_draw_;
+    std::function<void()> on_gaussian_composite_complete_;
     bool needs_wait_after_draw_ = false;
+#if defined(__APPLE__)
+    // Scratch buffer for RequestReadPixels' Metal RGBA readback workaround;
+    std::vector<uint8_t> read_pixels_rgba_buffer_;
+#endif
 };
 
 }  // namespace rendering
